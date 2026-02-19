@@ -1,7 +1,1 @@
-{
-    "functions": {
-        "api/parse": {
-            "maxDuration": 300
-        }
-    }
-}
+{}

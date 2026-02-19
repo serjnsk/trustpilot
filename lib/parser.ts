@@ -7,7 +7,6 @@ export interface ParseResult {
 /**
  * Парсит количество отзывов из HTML страницы Trustpilot.
  * 6 стратегий, от самой надёжной к наименее надёжной.
- * Извлечено из sborka-ai/lib/actions/trustpilot.ts
  */
 export function parseReviewCount(html: string): number | null {
     // Strategy 1: data-rating-count attribute (most reliable)
@@ -59,43 +58,34 @@ export function parseReviewCount(html: string): number | null {
 }
 
 /**
- * Парсит email со страницы Trustpilot.
- * 3 стратегии: mailto-ссылки, JSON-LD contactPoint, regex.
+ * Парсит email из блока "Contact info" на странице Trustpilot.
+ * Ищет mailto-ссылку ТОЛЬКО внутри блока Contact info.
+ * Если Contact info нет — возвращает null.
  */
 export function parseEmail(html: string): string | null {
-    // Strategy 1: mailto: links
-    const mailtoMatch = html.match(/href=["']mailto:([^"'?]+)/i)
+    // Ищем блок "Contact info" — после него идёт <ul> с контактами
+    const contactIdx = html.indexOf("Contact info")
+    if (contactIdx === -1) {
+        return null // Нет блока Contact info — нет почты
+    }
+
+    // Берём ~6000 символов после "Contact info" — SVG-иконки занимают много места
+    const contactBlock = html.substring(contactIdx, contactIdx + 6000)
+
+    // Strategy 1: mailto: link inside Contact info block
+    const mailtoMatch = contactBlock.match(/href=["']mailto:([^"'?]+)/i)
     if (mailtoMatch) {
         return mailtoMatch[1].trim().toLowerCase()
     }
 
-    // Strategy 2: JSON-LD contactPoint email
-    const contactEmailMatch = html.match(
-        /"contactPoint"[^}]*"email"\s*:\s*"([^"]+)"/i
-    )
-    if (contactEmailMatch) {
-        return contactEmailMatch[1].trim().toLowerCase()
-    }
-
-    // Strategy 3: email in JSON-LD (generic)
-    const jsonLdEmailMatch = html.match(/"email"\s*:\s*"([^"]+@[^"]+)"/i)
-    if (jsonLdEmailMatch) {
-        return jsonLdEmailMatch[1].trim().toLowerCase()
-    }
-
-    // Strategy 4: Regex — find email patterns in text
-    // Exclude common false positives (image filenames, CSS classes)
-    const emailRegex =
-        /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
-    const allEmails = html.match(emailRegex) || []
-
-    const filtered = allEmails.filter((email) => {
+    // Strategy 2: email pattern inside Contact info block
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
+    const emails = contactBlock.match(emailRegex) || []
+    const filtered = emails.filter((email) => {
         const lower = email.toLowerCase()
-        // Filter out obvious non-emails
+        if (lower.includes("trustpilot.com")) return false
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".svg")) return false
         if (lower.includes("sentry") || lower.includes("webpack")) return false
-        if (lower.includes("example.com") || lower.includes("test.com")) return false
-        if (lower.startsWith("2x") || lower.startsWith("3x")) return false
         return true
     })
 
@@ -104,32 +94,60 @@ export function parseEmail(html: string): string | null {
 
 /**
  * Парсит название сервиса из HTML страницы Trustpilot.
+ * Приоритет:
+ * 1. displayName CSS-класс (самый чистый — просто имя)
+ * 2. <title> тег (обрезаем суффиксы)
+ * 3. og:title (обрезаем рейтинг)
  */
 export function parseServiceName(html: string): string | null {
-    // Strategy 1: og:title meta tag
+    // Strategy 1: displayName CSS-класс — содержит чистое имя
+    // Формат: displayName__XXXXX">ServiceName<!-- -->
+    const displayNameMatch = html.match(
+        /displayName[^"]*"[^>]*>([^<]+?)(?:\s*<!--)/i
+    )
+    if (displayNameMatch) {
+        const name = displayNameMatch[1]
+            .replace(/&nbsp;/g, "")
+            .replace(/&amp;/g, "&")
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .trim()
+        if (name.length > 0) {
+            return name
+        }
+    }
+
+    // Strategy 2: <title> tag — "ServiceName Reviews | Read Customer..."
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+    if (titleMatch) {
+        const cleaned = titleMatch[1]
+            .replace(/\s*Reviews?\s*\|.*$/i, "")
+            .replace(/\s*[\|·-]\s*Trustpilot.*$/i, "")
+            .replace(/\s*(?:Reviews?|Отзывы)\s*$/i, "")
+            .trim()
+        if (cleaned.length > 0) {
+            return cleaned
+        }
+    }
+
+    // Strategy 3: og:title — "ServiceName is rated "X" with Y / 5 on Trustpilot"
     const ogTitleMatch = html.match(
         /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i
     )
     if (ogTitleMatch) {
-        // Remove "Reviews" and similar suffixes
-        return ogTitleMatch[1]
-            .replace(/\s*(?:Reviews?|Отзывы)\s*$/i, "")
+        const cleaned = ogTitleMatch[1]
+            .replace(/\s+is\s+rated\s+.*/i, "")
+            .replace(/&quot;/g, '"')
             .trim()
+        if (cleaned.length > 0) {
+            return cleaned
+        }
     }
 
-    // Strategy 2: displayName in JSON-LD
-    const displayNameMatch = html.match(/"displayName"\s*:\s*"([^"]+)"/i)
-    if (displayNameMatch) {
-        return displayNameMatch[1].trim()
-    }
-
-    // Strategy 3: title tag
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
-    if (titleMatch) {
-        return titleMatch[1]
-            .replace(/\s*[\|·-]\s*Trustpilot.*$/i, "")
-            .replace(/\s*(?:Reviews?|Отзывы)\s*$/i, "")
-            .trim()
+    // Strategy 4: displayName in JSON-LD
+    const jsonDisplayMatch = html.match(/"displayName"\s*:\s*"([^"]+)"/i)
+    if (jsonDisplayMatch) {
+        return jsonDisplayMatch[1].trim()
     }
 
     return null

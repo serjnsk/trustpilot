@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse, after } from "next/server"
 import { supabase } from "@/lib/supabase"
 import { scrapeUrl } from "@/lib/scrapfly"
 import { parseTrustpilotPage } from "@/lib/parser"
@@ -82,10 +82,14 @@ export async function POST(request: NextRequest) {
 
         await supabase.from("parse_results").insert(resultRows)
 
-        // Process in background (non-blocking)
-        processJob(job.id).catch((err) =>
-            console.error("[Parse] Background processing error:", err)
-        )
+        // Process in background — after() keeps the function alive on Vercel
+        after(async () => {
+            try {
+                await processJob(job.id)
+            } catch (err) {
+                console.error("[Parse] Background processing error:", err)
+            }
+        })
 
         return NextResponse.json({ jobId: job.id })
     } catch (error) {

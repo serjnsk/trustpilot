@@ -1,6 +1,6 @@
 {
     "functions": {
-        "app/api/parse/route.ts": {
+        "api/parse": {
             "maxDuration": 300
         }
     }
